@@ -19,7 +19,17 @@ namespace StreamCompaction {
          */
         void scan(int n, int *odata, const int *idata) {
             timer().startCpuTimer();
-            // TODO
+            
+            // Exclusive scan (prefix sum)
+            // Output[0] = 0
+            // Output[i] = Input[0] + Input[1] + ... + Input[i-1]
+            if (n > 0) {
+                odata[0] = 0;
+                for (int i = 1; i < n; i++) {
+                    odata[i] = odata[i - 1] + idata[i - 1];
+                }
+            }
+            
             timer().endCpuTimer();
         }
 
@@ -30,9 +40,18 @@ namespace StreamCompaction {
          */
         int compactWithoutScan(int n, int *odata, const int *idata) {
             timer().startCpuTimer();
-            // TODO
+            
+            // Simply iterate through input and copy non-zero elements
+            int count = 0;
+            for (int i = 0; i < n; i++) {
+                if (idata[i] != 0) {
+                    odata[count] = idata[i];
+                    count++;
+                }
+            }
+            
             timer().endCpuTimer();
-            return -1;
+            return count;
         }
 
         /**
@@ -42,9 +61,35 @@ namespace StreamCompaction {
          */
         int compactWithScan(int n, int *odata, const int *idata) {
             timer().startCpuTimer();
-            // TODO
+            
+            // Step 1: Create boolean array (map)
+            int *bools = new int[n];
+            for (int i = 0; i < n; i++) {
+                bools[i] = (idata[i] != 0) ? 1 : 0;
+            }
+            
+            // Step 2: Perform exclusive scan on boolean array
+            int *indices = new int[n];
+            indices[0] = 0;
+            for (int i = 1; i < n; i++) {
+                indices[i] = indices[i - 1] + bools[i - 1];
+            }
+            
+            // Step 3: Scatter - write elements to output based on indices
+            int count = 0;
+            for (int i = 0; i < n; i++) {
+                if (bools[i] == 1) {
+                    odata[indices[i]] = idata[i];
+                    count++;
+                }
+            }
+            
+            // Clean up temporary arrays
+            delete[] bools;
+            delete[] indices;
+            
             timer().endCpuTimer();
-            return -1;
+            return count;
         }
     }
 }
