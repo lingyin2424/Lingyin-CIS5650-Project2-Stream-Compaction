@@ -33,18 +33,17 @@ namespace StreamCompaction {
 
             int* buffer_1 = nullptr;
 			int* buffer_2 = nullptr;
-            //for (int i = 0; i < 10; i++) { printf("%d ", idata[i]); } printf("\n");
+
 			cudaMalloc((void**)&buffer_1, n * sizeof(int));
 			cudaMalloc((void**)&buffer_2, n * sizeof(int));
 			cudaMemcpy(buffer_1, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
             timer().startGpuTimer();
-            
+			int B = 1024;
             for (int d = 1; d <= n; d *= 2) {
-				kernNaiveScan <<<(n + 255) / 256, 256 >>> (n, d, buffer_2, buffer_1);
+				kernNaiveScan <<<(n + B - 1) / B, B >>> (n, d, buffer_2, buffer_1);
 				std::swap(buffer_1, buffer_2);
             }
-
 
 
 			cudaMemcpy(odata + 1, buffer_1, (n - 1) * sizeof(int), cudaMemcpyDeviceToHost);
@@ -54,8 +53,6 @@ namespace StreamCompaction {
 			cudaFree(buffer_1);
 			cudaFree(buffer_2);
 
-
-            //for (int i = 0; i < 10; i++) { printf("%d ", odata[i]); } printf("\n");
         }
     }
 }

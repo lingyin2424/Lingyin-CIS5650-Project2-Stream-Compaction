@@ -2,6 +2,22 @@
 #include <cuda_runtime.h>
 #include "common.h"
 #include "efficient.h"
+#include<iostream>
+
+
+template<typename T>    
+void print_gpu(const T* data, int n, char* name = nullptr) {
+    if (name != nullptr) {
+        std::cout << name << ": \n";
+	}
+    T* temp = new T[n];
+    cudaMemcpy(temp, data, n * sizeof(T), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < n; i++) {
+        std::cout << temp[i] << " ";
+    }
+    std::cout << std::endl;
+	delete[] temp;
+}
 
 namespace StreamCompaction {
     namespace Efficient {
@@ -14,15 +30,15 @@ namespace StreamCompaction {
 
 #define LOG_NUM_BANKS 5              // 2^5 = 32
 #define NUM_BANKS (1 << LOG_NUM_BANKS)
-#define CONFLICT_FREE_OFFSET(idx) ((idx) >> LOG_NUM_BANKS)
-
-        __global__ void blellochScan(int n, int* idata) {
-			// 实际上只发起了 1 个 block n/2 线程
+        
+        __global__ void blellochScan(int n, int* global_idata, int* blockSums) {
             //return;
-			int index = threadIdx.x + blockIdx.x * blockDim.x;
+			int index = threadIdx.x;
    //         if(index >= n) {
    //             return;
 			//}
+
+			int* idata = global_idata + blockIdx.x * n;
 
             auto cf = [](int idx) { return idx + (idx >> LOG_NUM_BANKS); };
                 
@@ -39,6 +55,9 @@ namespace StreamCompaction {
             }
 
             if (index == 0) {
+                if (blockSums != nullptr) {
+                    blockSums[blockIdx.x] = data[cf(n - 1)];
+                }
                 data[cf(n - 1)] = 0;
 			}
             __syncthreads();
@@ -62,48 +81,106 @@ namespace StreamCompaction {
             idata[index * 2 + 1] = data[cf(index * 2 + 1)];
         }
 
+
+
+     /*
+        __global__ void blellochScan(int n, int* global_idata, int* blockSums) {
+            int index = threadIdx.x;
+            int* idata = global_idata + blockIdx.x * n;
+
+            __syncthreads();
+            for (int d = 1; d < n; d *= 2) {
+     //           if ((index + 1) % (d * 2) == 0) {
+					//idata[index] += idata[index - d];
+     //           }
+                if (index < (n / 2 / d)) {
+                    idata[index * d * 2 + d * 2 - 1] += idata[index * d * 2 - 1 + d];
+                }
+                __syncthreads();
+            }
+
+            if (index == 0) {
+                if (blockSums != nullptr) {
+                    blockSums[blockIdx.x] = idata[n - 1];
+                }
+                idata[n - 1] = 0;
+            }
+            __syncthreads();
+
+
+            for (int d = n; d >= 2; d /= 2) {
+                if (index < (n / 2 / d)) {
+                    int fa = index * d * 2 + d * 2 - 1;
+                    int lson = fa - d;
+                    int rson = fa;
+                //if((index + 1) % d == 0) {
+                //    int lson = index - d / 2;
+                //    int rson = index;
+                    int t = idata[lson];
+                    idata[lson] = idata[index];
+                    idata[rson] = idata[index] + t;
+				}
+                __syncthreads();
+            }
+        }
+     */
+
+        __global__ void AddBlockSums(int n, int* global_idata, const int* blockSums) {
+            int index = threadIdx.x;
+            int* idata = global_idata + blockIdx.x * n;
+			idata[index] += blockSums[blockIdx.x];
+           
+		}
+
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
-        void scan(int n, int *odata, const int *idata) {
-            timer().startGpuTimer();
+
+        static int ceil_to_pow2(int n) {
+            int ret = 1;
+            while (ret < n) {
+                ret <<= 1;
+            }
+            return ret;
+        }
+
+
+
+        void scan(int n, int* odata, const int* idata) {
             // TODO
 
-            int nn = n;
-            while (nn != (nn & -nn)) {
-                nn += (nn & -nn);
-            }
-
-            int B = 256;
-            nn = std::max(B, nn);
-			int* temp_data = nullptr;
+            int B = 1024;
+		    int nn = std::max(ceil_to_pow2(n), B);
+			int nnn = std::max(ceil_to_pow2(nn / B), B);
+            //printf("n = %d\n", n);
+		
+            int* temp_data = nullptr;
 			cudaMalloc((void**)&temp_data, nn * sizeof(int));
-			cudaMemset(temp_data, 0, nn * sizeof(int));
-			cudaMemcpy(temp_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
-			blellochScan<< <1, nn / 2, (nn + nn / NUM_BANKS) * sizeof(int) >> > (nn, temp_data);
+    	    cudaMemset(temp_data, 0, nn * sizeof(int));
+            cudaMemcpy(temp_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+			
+            int* blockSums = nullptr;
+			cudaMalloc((void**)&blockSums, nnn * sizeof(int));
+			cudaMemset(blockSums, 0, nnn * sizeof(int));
+            //print_gpu(temp_data, nn, "idata");
+            timer().startGpuTimer();
+            blellochScan<< <nn / B, B / 2, (B + B / NUM_BANKS) * sizeof(int) >> > (B, temp_data, blockSums);
+            
+   //         print_gpu(temp_data, nn, "temp_data");
+			//print_gpu(blockSums, nnn, "blockSums");
+            
+
+            if (nn / B > 1) {
+                cudaDeviceSynchronize();
+				blellochScan << <1, nnn / 2, (nnn + nnn / NUM_BANKS) * sizeof(int) >> > (nnn, blockSums, nullptr);
+                cudaDeviceSynchronize();
+                AddBlockSums << <nn / B, B >> > (B, temp_data, blockSums);
+            }
+            timer().endGpuTimer();
 
 			cudaMemcpy(odata, temp_data, n * sizeof(int), cudaMemcpyDeviceToHost);
 
 			cudaFree(temp_data);
-
-            timer().endGpuTimer();
-
-
-            for (int s = 0, i = 0; i < n; i++) {
-                if (odata[i] != s) {
-					printf("Error at %d: %d != %d\n", i, odata[i], s);
-                }
-				s += idata[i];
-            }
-
-   //         for (int i = 0; i < 10; i++) {
-			//	printf("%d ", idata[i]);
-   //         }
-			//printf("\n");
-   //         for (int i = 0; i < 10; i++) {
-			//	printf("%d ", odata[i]);
-   //         }
-			//printf("\n");
 
         }
 
