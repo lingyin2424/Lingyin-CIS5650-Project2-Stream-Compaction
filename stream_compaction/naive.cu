@@ -35,18 +35,25 @@ namespace StreamCompaction {
 			int* buffer_2 = nullptr;
 
 			cudaMalloc((void**)&buffer_1, n * sizeof(int));
+			checkCUDAError("cudaMalloc buffer_1 failed");
 			cudaMalloc((void**)&buffer_2, n * sizeof(int));
+			checkCUDAError("cudaMalloc buffer_2 failed");
 			cudaMemcpy(buffer_1, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+			checkCUDAError("cudaMemcpy to buffer_1 failed");
 
             timer().startGpuTimer();
 			int B = 1024;
             for (int d = 1; d <= n; d *= 2) {
 				kernNaiveScan <<<(n + B - 1) / B, B >>> (n, d, buffer_2, buffer_1);
+				checkCUDAError("kernNaiveScan failed");
+				cudaDeviceSynchronize();
+				checkCUDAError("kernNaiveScan synchronization failed");
 				std::swap(buffer_1, buffer_2);
             }
 
 
 			cudaMemcpy(odata + 1, buffer_1, (n - 1) * sizeof(int), cudaMemcpyDeviceToHost);
+			checkCUDAError("cudaMemcpy from buffer_1 failed");
 			odata[0] = 0;
 
 			timer().endGpuTimer();
